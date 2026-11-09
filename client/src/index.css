@@ -1,0 +1,165 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens. :root holds today's dark values unchanged, so nothing that doesn't
+   opt in is affected. [data-theme="light"] is applied only on AppLayout.tsx's own
+   root element (never <html>), so it cascades to everything inside the app shell
+   without ever reaching host/projector screens or public pages, which stay solid
+   dark as the design requires. Values are raw "R G B" triplets so every existing
+   opacity modifier (bg-slate-900/50, border-brand-text/10, etc.) keeps working. */
+:root {
+  --color-bg: 0 0 0; /* #000000 */
+  --color-text: 255 255 255; /* white */
+  --color-accent: 250 204 21; /* #facc15 */
+  --color-accent-hover: 253 224 71; /* #fde047 */
+  --color-panel: 33 33 33; /* #212121 */
+  --color-panel-solid: 13 13 13; /* #0d0d0d */
+  --color-muted: 163 163 163; /* neutral-400, same as today */
+  --color-muted-2: 115 115 115; /* neutral-500, same as today */
+  --surface-fill: rgba(255, 255, 255, 0.05); /* glass/surface card fill — unchanged from today */
+  --surface-border: rgba(255, 255, 255, 0.10); /* glass/surface card border — unchanged from today */
+  --color-correct: 74 222 128; /* green-400, same as today */
+  --color-wrong: 248 113 113; /* red-400, same as today */
+  --color-slate-hover: 64 64 64; /* slate-700's own value — Dark Mode unchanged */
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --color-bg: 238 239 241; /* soft off-white, not stark white — lets white cards visibly pop */
+  --color-text: 15 23 42;
+  --color-accent: 234 179 8;
+  --color-accent-hover:  253 224 71; /* Darker Gold for hover */
+  --color-panel: 222 226 230; /* input fields: distinct light-grey tier — separated from both the page bg (238) and the white card bg below */
+  --color-panel-solid: 255 255 255; /* solid-panel equivalent of a glass card — same "elevated" tier as the card bg below */
+  --color-muted: 82 82 82; /* darker grey — ~7.5:1 contrast on white */
+  --color-muted-2: 64 64 64; /* darker still — ~10:1 contrast on white */
+  --surface-fill: rgba(255, 255, 255, 0.95); /* near-solid white card layer — now clearly distinct from both the page bg and the grey input tier */
+  --surface-border: rgba(15, 23, 42, 0.08); /* subtle dark-tinted border for definition in light mode */
+  --color-correct: 21 128 61; /* green-700 — darker for contrast on the light bg */
+  --color-wrong: 225 29 72; /* Warm Coral: #E11D48 */
+}
+
+
+@layer components {
+  /* Centered cards on the public pages (join, login, register, feedback).
+     The yellow glow is behind them, so the blur is visible there. */
+  .glass-card {
+    @apply backdrop-blur-xl border rounded-2xl;
+    background-color: var(--surface-fill);
+    border-color: var(--surface-border);
+  }
+
+  /* Cards and panels inside the app: the same translucent look without blur.
+     Use this (not glass-card) for anything that contains a ⋮ menu or dropdown. */
+  .surface {
+    @apply border rounded-2xl;
+    background-color: var(--surface-fill);
+    border-color: var(--surface-border);
+  }
+
+  /* Chrome sitting directly on the open page, no modal backdrop behind it (Game
+     PIN display, the fixed Settings gear). panel-solid reads as pure white there
+     in Light Mode with nothing to separate it from the page. Scoped to its own
+     class rather than changing --color-panel-solid itself, so modals that DO use
+     bg-slate-900 (ConfirmModal, PlayerDetail) are unaffected — they rely on their
+     dark backdrop for contrast, not this. Dark Mode is identical to panel-solid.
+     INTERACTIVE elements only (buttons, clickable boxes) — this class carries a
+     :hover rule below, so a non-interactive container must use .chrome-surface
+     instead or it will visibly darken whenever the cursor passes over it. */
+  .chrome-panel {
+    background-color: rgb(var(--color-panel-solid) / 1);
+  }
+
+  /* Same color as chrome-panel, but for STATIC backgrounds with no hover state —
+     e.g. the QR modal's panel, which isn't a button. This is what the QR modal
+     should have used from the start instead of chrome-panel. */
+  .chrome-surface {
+    background-color: rgb(var(--color-panel-solid) / 1);
+  }
+}
+
+[data-theme="light"] .chrome-panel {
+  background-color: rgb(var(--color-panel) / 1);
+}
+[data-theme="light"] .chrome-surface {
+  background-color: rgb(var(--color-panel) / 1);
+}
+
+
+/* Chrome-panel elements (Game PIN displays, the Settings gear) share one hover
+   treatment. Dark Mode hover uses --color-panel (unchanged, pre-existing look).
+   Light Mode needed its OWN distinct shade — reusing --color-panel-solid there
+   resolves to literal white (255 255 255), which is what caused the "pure white
+   hover" bug. This is a fixed mid-grey, deliberately between the default panel
+   shade and white, never reusing an existing white-valued token. */
+.chrome-panel:hover {
+  background-color: rgb(var(--color-panel) / 1);
+}
+[data-theme="light"] .chrome-panel:hover {
+  background-color: rgb(205 209 214);
+}
+
+/* Leave button has its own class (not chrome-panel) specifically to avoid a
+   specificity collision: [data-theme="light"] .chrome-panel:hover is MORE
+   specific than .theme-invert-hover:hover, so combining the two classes on one
+   element let chrome-panel's white hover silently win over the intended
+   black/white invert. This class owns its default AND hover, so nothing competes. */
+.leave-chip {
+  background-color: rgb(var(--color-panel-solid) / 1);
+  color: rgb(var(--color-text) / 0.8);
+}
+
+[data-theme="light"] .leave-chip {
+  background-color: rgb(var(--color-panel) / 1);
+  color: rgb(var(--color-text) / 0.7);
+}
+.leave-chip:hover {
+  background-color: #000;
+  color: #fff;
+}
+[data-theme="dark"] .leave-chip:hover {
+  background-color: #fff;
+  color: #000;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #000000;
+  background-image:
+    radial-gradient(circle at 15% 15%, rgba(250, 204, 21, 0.08), transparent 40%),
+    radial-gradient(circle at 85% 85%, rgba(250, 204, 21, 0.05), transparent 40%);
+  min-height: 100vh;
+}
+
+/* Default zoom: on desktop screens the app is shown at 85%.
+   Everything is sized in rem, so changing this one number rescales the whole app. */
+@media (min-width: 1024px) {
+  html {
+    font-size: 85%;
+  }
+}
+
+/* Scrolls normally, just hides the scrollbar visually (used for capped-height lists). */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none; /* Edge/old IE */
+    scrollbar-width: none; /* Firefox */
+  }
+}
+
+/* Tiptap Placeholder Styling */
+.ProseMirror p.is-editor-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: rgb(var(--color-text)/0.5);
+  pointer-events: none;
+  height: 0;
+}

@@ -1,0 +1,252 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Host {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  phone     String?
+  createdAt DateTime @default(now())
+  quizzes   Quiz[]
+  categories Category[]
+  qodQuizzes QodQuiz[]
+  trashAutoDeleteDays Int?
+  deletedAt DateTime? // set = account scheduled for deletion (30-day recoverable window)
+}
+
+model Quiz {
+  id              String        @id @default(uuid())
+  hostId          String
+  host            Host          @relation(fields: [hostId], references: [id])
+  title           String
+  description     String?
+  topic           String?
+  category        String        @default("Generic")
+  isFavorite      Boolean       @default(false)
+  timePerQuestion Int           @default(20)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
+  questions       Question[]
+  sessions        QuizSession[]
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+}
+
+model Question {
+  id        String            @id @default(uuid())
+  quizId    String
+  quiz      Quiz              @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  type      QuestionType      @default(MULTIPLE_CHOICE)
+  text      String
+  timeLimit Int
+  points    Int               @default(1000)
+  order     Int
+  options   QuestionOption[]
+  createdAt DateTime          @default(now())
+  deletedAt DateTime?
+}
+
+model QuestionOption {
+  id         String    @id @default(uuid())
+  questionId String
+  question   Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text       String
+  isCorrect  Boolean   @default(false)
+  order      Int
+}
+
+enum SessionStatus {
+  WAITING
+  ACTIVE
+  ENDED
+}
+
+model QuizSession {
+  id                   String            @id @default(uuid())
+  quizId               String?
+  quiz                 Quiz?             @relation(fields: [quizId], references: [id], onDelete: SetNull)
+  hostId               String            // snapshot, set the moment the game ends — survives the quiz being deleted
+  quizTitleSnapshot    String?
+  quizTopicSnapshot    String?
+  gamePin              String            // unique only among live (non-ENDED) sessions — enforced by a partial index added in migration scope_gamepin_uniqueness_to_live_sessions, not expressible here
+  status               SessionStatus     @default(WAITING)
+  currentQuestionIndex Int               @default(0)
+  startedAt            DateTime?
+  endedAt              DateTime?
+  createdAt            DateTime          @default(now())
+  deletedAt            DateTime?
+  participants         Participant[]
+  askedQuestions       SessionQuestion[]
+}
+
+// One row per question actually shown in a given game — recorded the moment it
+// goes live (question:new), independent of whether anyone answers it. This is
+// what lets a report include a question nobody answered. `order` is the 1-based
+// position it was asked in THIS game, so the report lists questions in the order
+// they were actually played, even if the quiz's own question order changes later.
+model SessionQuestion {
+  id                   String        @id @default(uuid())
+  sessionId            String
+  session              QuizSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId           String        // informational only now — no FK, so the live Question can be freely deleted
+  questionTextSnapshot String
+  questionTypeSnapshot QuestionType
+  pointsSnapshot       Int
+  optionsSnapshot      Json          // [{ id, text, isCorrect, order }], as they were when this question was shown
+  order                Int
+  askedAt              DateTime      @default(now())
+
+  @@unique([sessionId, questionId])
+}
+
+model Participant {
+  id          String      @id @default(uuid())
+  sessionId   String
+  session     QuizSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  displayName String
+  score       Int         @default(0)
+  joinedAt    DateTime    @default(now())
+  deviceId    String?     // identifies a returning student's browser, to resume their seat instead of duplicating it
+  answers     Answer[]
+
+  @@unique([sessionId, deviceId])
+}
+
+model Answer {
+  id                         String      @id @default(uuid())
+  participantId              String
+  participant                Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  questionId                 String      // informational only — no FK
+  questionTextSnapshot       String
+  selectedOptionId           String?     // informational only — no FK
+  selectedOptionTextSnapshot String?
+  correctOptionTextSnapshot  String?
+  isCorrect                  Boolean     @default(false)
+  pointsAwarded              Int         @default(0)
+  timeTakenMs                Int?
+  answeredAt                 DateTime    @default(now())
+
+  @@unique([participantId, questionId])
+}
+
+enum CategoryType {
+  QUIZ
+  QOD
+}
+
+model Category {
+  id        String       @id @default(uuid())
+  hostId    String
+  host      Host         @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  name      String
+  type      CategoryType @default(QUIZ)
+  createdAt DateTime     @default(now())
+  @@unique([hostId, name, type])
+}
+
+model QodQuiz {
+  id              String        @id @default(uuid())
+  hostId          String
+  host            Host          @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  topic           String?
+  category        String        @default("Generic")
+  isFavorite      Boolean       @default(false)
+  timePerQuestion Int           @default(20)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
+  questions       QodQuestion[]
+  sessions        QodSession[]
+}
+
+model QodQuestion {
+  id        String        @id @default(uuid())
+  qodQuizId String
+  qodQuiz   QodQuiz       @relation(fields: [qodQuizId], references: [id], onDelete: Cascade)
+  text      String
+  timeLimit Int?
+  order     Int
+  createdAt DateTime      @default(now())
+  deletedAt DateTime?
+}
+
+enum QodSessionStatus {
+  WAITING
+  ACTIVE
+  ENDED
+}
+
+// A Regular QOD session. Late joining is always allowed, at any status
+// up to ENDED — unlike regular Quiz Session, there's no WAITING-only restriction.
+model QodSession {
+  id                   String               @id @default(uuid())
+  qodQuizId            String?
+  qodQuiz              QodQuiz?             @relation(fields: [qodQuizId], references: [id], onDelete: SetNull)
+  hostId               String               // snapshot, set the moment the session ends
+  quizTitleSnapshot    String?
+  quizTopicSnapshot    String?
+  gamePin              String               // unique only among live (non-ENDED) sessions — see the matching comment on QuizSession.gamePin
+  status               QodSessionStatus     @default(WAITING)
+  currentQuestionIndex Int                  @default(0)
+  startedAt            DateTime?
+  endedAt              DateTime?
+  createdAt            DateTime             @default(now())
+  deletedAt            DateTime?            // set = report is in Trash
+  participants         QodParticipant[]
+  askedQuestions       QodSessionQuestion[]
+}
+
+// Mirrors Quiz Session's SessionQuestion — one row per question actually shown in
+// this session, written the moment it goes live. QOD never had this before, so this
+// also fixes a question that was shown but never answered not previously appearing
+// in a Regular QOD report at all.
+model QodSessionQuestion {
+  id                   String     @id @default(uuid())
+  sessionId            String
+  session              QodSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId           String     // informational only — no FK
+  questionTextSnapshot String
+  order                Int
+  askedAt              DateTime   @default(now())
+
+  @@unique([sessionId, questionId])
+}
+
+model QodParticipant {
+  id          String        @id @default(uuid())
+  sessionId   String
+  session     QodSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  displayName String
+  joinedAt    DateTime      @default(now())
+  deviceId    String?       // identifies a returning student's browser, to resume their seat instead of duplicating it
+  responses   QodResponse[]
+
+  @@unique([sessionId, deviceId])
+}
+
+// Students may submit multiple responses per question — each submission is its own
+// row. The host's feed shows them newest-first, so a resubmitted answer naturally
+// floats to the top instead of overwriting the old one in place.
+model QodResponse {
+  id                   String         @id @default(uuid())
+  participantId        String
+  participant          QodParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  questionId            String        // informational only — no FK
+  questionTextSnapshot  String
+  text                  String
+  answeredAt            DateTime       @default(now())
+}
+

@@ -3,12 +3,14 @@ import type { Socket } from "socket.io";
 
 export interface FeedbackMessage {
   id: string;
+  participantId: string;
   name: string;
   text: string;
   at: number;
 }
 
 interface Participant {
+  id: string;
   name: string;
   lastSentAt: number;
 }
@@ -41,6 +43,10 @@ export const MIN_SEND_GAP_MS = 2000; // one message every 2 seconds per student
 
 export const studentRoom = (pin: string) => `feedback:${pin}`;
 export const hostRoom = (pin: string) => `feedback-host:${pin}`;
+// A private room per participant, so a removed student's own screen can be
+// notified instantly — mirrors Quiz Session's participantRoom pattern, scoped by
+// pin too since a participantId is only ever unique within its own session.
+export const studentPrivateRoom = (pin: string, participantId: string) => `feedback-participant:${pin}:${participantId}`;
 
 const ANIME_ADJECTIVES = [
   "Shadow", "Crimson", "Golden", "Silent", "Fierce", "Slayer", "Phantom", "Mighty",
@@ -125,8 +131,23 @@ export function removeMessage(session: LiveFeedbackSession, messageId: string): 
   return true;
 }
 
+// Host removes a participant entirely: their token-keyed entry is deleted (so any
+// future send/rename fails), and their past messages are stripped from the feed —
+// mirrors Regular QOD's own participant removal, which also filters out that
+// participant's prior responses rather than only blocking future ones.
+export function removeParticipant(session: LiveFeedbackSession, participantId: string): { name: string } | null {
+  for (const [token, p] of session.participants.entries()) {
+    if (p.id === participantId) {
+      session.participants.delete(token);
+      session.messages = session.messages.filter((m) => m.participantId !== participantId);
+      return { name: p.name };
+    }
+  }
+  return null;
+}
+
 // Gives a student a random anonymous name (unique in this session) and a private token.
-export function addParticipant(session: LiveFeedbackSession): { name: string; token: string } {
+export function addParticipant(session: LiveFeedbackSession): { name: string; token: string; participantId: string } {
   const used = new Set(Array.from(session.participants.values()).map((p) => p.name));
 
   let name = `${pick(ANIME_ADJECTIVES)} ${pick(ANIME_CREATURES)}`;
@@ -136,8 +157,12 @@ export function addParticipant(session: LiveFeedbackSession): { name: string; to
   if (used.has(name)) name = `${name} ${session.participants.size + 1}`;
 
   const token = crypto.randomBytes(12).toString("hex");
-  session.participants.set(token, { name, lastSentAt: 0 });
-  return { name, token };
+  // id is separate from token: token stays secret to the student's own browser
+  // (it authenticates their sends), id is what the host is allowed to see and
+  // act on — the host never learns a student's token.
+  const id = crypto.randomBytes(8).toString("hex");
+  session.participants.set(token, { id, name, lastSentAt: 0 });
+  return { name, token, participantId: id };
 }
 
 // What the host screen is allowed to see.
@@ -189,10 +214,13 @@ export function registerFeedbackSocket(socket: Socket) {
   // "connect" (see FeedbackRoom.tsx), so a student whose session ended while
   // their device was locked or the tab was closed learns that immediately
   // instead of silently sitting on the compose screen until their next send fails.
-  socket.on("feedback:join", ({ pin }: { pin: string }) => {
+  socket.on("feedback:join", ({ pin, participantId }: { pin: string; participantId?: string }) => {
     const session = typeof pin === "string" ? getSession(pin) : undefined;
     if (session) {
       socket.join(studentRoom(pin));
+      // Lets the host's removal reach this one student directly, without waiting
+      // for their next send/rename to fail.
+      if (participantId) socket.join(studentPrivateRoom(pin, participantId));
     } else {
       socket.emit("feedback:ended");
     }

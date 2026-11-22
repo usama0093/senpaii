@@ -10,6 +10,7 @@ interface Room {
   pin: string;
   name: string;
   token: string;
+  participantId?: string;
   allowNameEdit?: boolean;
 }
 
@@ -48,36 +49,44 @@ export default function FeedbackRoom() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [ended, setEnded] = useState(false);
+  const [removed, setRemoved] = useState(false);
 
   // Find out when the host ends the session.
   useEffect(() => {
     if (!room) return;
 
-    socket.on("connect", () => socket.emit("feedback:join", { pin: room.pin }));
+    socket.on("connect", () =>
+      socket.emit("feedback:join", { pin: room.pin, participantId: room.participantId })
+    );
     socket.on("feedback:settings-update", (settings: { allowNameEdit: boolean }) => {
       setAllowNameEdit(settings.allowNameEdit);
     });
     socket.on("feedback:ended", () => setEnded(true));
+    // Pushed the instant the host removes this student, so their screen jumps to
+    // "You were removed" right away instead of only on their next failed send.
+    socket.on("feedback:removed", () => setRemoved(true));
     socket.connect();
 
     return () => {
       socket.off("connect");
       socket.off("feedback:settings-update");
       socket.off("feedback:ended");
+      socket.off("feedback:removed");
       socket.disconnect();
     };
   }, [room]);
 
-  // Forget the saved name once the session is over.
+  // Forget the saved name once the session is over, or once this student has
+  // been removed from it.
   useEffect(() => {
-    if (ended) {
+    if (ended || removed) {
       try {
         sessionStorage.removeItem("liveFeedbackRoom");
       } catch (err) {
         // ignore
       }
     }
-  }, [ended]);
+  }, [ended, removed]);
 
   if (!room) {
     return (
@@ -111,7 +120,8 @@ export default function FeedbackRoom() {
         // ignore
       }
     } catch (err: any) {
-      setNameError(err.response?.data?.message || "Could not update your name");
+      if (err.response?.status === 410) setRemoved(true);
+      else setNameError(err.response?.data?.message || "Could not update your name");
     } finally {
       setSavingName(false);
     }
@@ -135,6 +145,7 @@ export default function FeedbackRoom() {
       setTimeout(() => setNotice(""), 3000);
     } catch (err: any) {
       if (err.response?.status === 404) setEnded(true);
+      else if (err.response?.status === 410) setRemoved(true);
       else setError(err.response?.data?.message || "Could not send your feedback");
     } finally {
       setSending(false);
@@ -150,6 +161,22 @@ export default function FeedbackRoom() {
         </Suspense>
         <h1 className="text-3xl font-extrabold text-brand-accent">Session ended</h1>
         <p className="text-slate-400">This feedback session has ended. Thank you!</p>
+        <Link to="/live-feedback" className="text-brand-accent font-medium hover:underline">
+          Join another session
+        </Link>
+      </div>
+    );
+  }
+
+  if (removed) {
+    return (
+      <div className="relative min-h-screen bg-brand-bg text-brand-text flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <SessionBrand />
+        <Suspense fallback={null}>
+          <ThemeToggleButton position="top-right" />
+        </Suspense>
+        <h1 className="text-3xl font-extrabold text-red-400">You were removed</h1>
+        <p className="text-slate-400">The host removed you from this session.</p>
         <Link to="/live-feedback" className="text-brand-accent font-medium hover:underline">
           Join another session
         </Link>

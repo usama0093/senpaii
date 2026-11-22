@@ -49,5 +49,12 @@ export function useCategories(base: string = "/quizzes") {
     setCategories((prev) => prev.filter((c) => c.id !== id));
   };
 
-  return { categories, loading, refresh, addCategory, removeCategory };
+  const renameCategory = async (id: string, name: string): Promise<CategoryItem> => {
+    const res = await api.put(`${base}/categories/${id}`, { name });
+    const updated: CategoryItem = res.data.data;
+    setCategories((prev) => sortCategories(prev.map((c) => (c.id === id ? updated : c))));
+    return updated;
+  };
+
+  return { categories, loading, refresh, addCategory, removeCategory, renameCategory };
 }

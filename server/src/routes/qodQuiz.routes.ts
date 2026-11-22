@@ -15,7 +15,7 @@ import {
   reorderQodQuestions,
   duplicateQodQuestion,
 } from "../controllers/qodQuestion.controller";
-import { getCategories, createCategory, deleteCategory } from "../controllers/category.controller";
+import { getCategories, createCategory, renameCategory, deleteCategory } from "../controllers/category.controller";
 
 const router = Router();
 
@@ -34,6 +34,7 @@ router.post("/categories", (req, _res, next) => {
   req.body.type = "qod";
   next();
 }, createCategory);
+router.put("/categories/:categoryId", renameCategory);
 router.delete("/categories/:categoryId", deleteCategory);
 
 router.get("/:id", getQodQuizById);

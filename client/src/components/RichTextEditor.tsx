@@ -7,14 +7,8 @@ import Subscript from "@tiptap/extension-subscript";
 import CharacterCount from "@tiptap/extension-character-count";
 import Placeholder from "@tiptap/extension-placeholder";
 
-// Shared styling for every rendered/edited rich-text block, via Tailwind arbitrary
-// child selectors — no changes to index.css needed. Headings stay close to body
-// text size (these are quiz questions, not documents); lists get real bullets/
-// numbers with proper indent.
-export const RICH_TEXT_CONTENT_CLASS =
-  "break-words [&_h1]:text-2xl [&_h1]:font-bold [&_h2]:text-xl [&_h2]:font-bold " +
-  "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5 [&_p]:my-0 " +
-  "[&_ul]:inline-block [&_ol]:inline-block [&_ul]:text-left [&_ol]:text-left [&_ul]:w-full [&_ol]:w-full";
+import { RICH_TEXT_CONTENT_CLASS } from "./richTextShared";
+export { RICH_TEXT_CONTENT_CLASS };
 
 function ToolbarButton({
   active,
@@ -283,10 +277,4 @@ export default function RichTextEditor({
   );
 }
 
-// Tiptap's "empty" HTML is "<p></p>", not "" — this is the correct emptiness check
-// to use in place of a plain-text `!text.trim()`.
-export function isRichTextEmpty(html: string): boolean {
-  const div = document.createElement("div");
-  div.innerHTML = html;
-  return !(div.textContent || "").trim();
-}
+export { isRichTextEmpty } from "./richTextShared";

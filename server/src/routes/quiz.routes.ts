@@ -16,7 +16,7 @@ import {
   duplicateQuestion,
   bulkUpdateQuestions,
 } from "../controllers/question.controller";
-import { getCategories, createCategory, deleteCategory } from "../controllers/category.controller";
+import { getCategories, createCategory, renameCategory, deleteCategory } from "../controllers/category.controller";
 
 const router = Router();
 
@@ -28,6 +28,7 @@ router.get("/", getQuizzes);
 // Fixed words ("categories") MUST come before the /:id routes.
 router.get("/categories", getCategories);
 router.post("/categories", createCategory);
+router.put("/categories/:categoryId", renameCategory);
 router.delete("/categories/:categoryId", deleteCategory);
 
 router.get("/:id", getQuizById);

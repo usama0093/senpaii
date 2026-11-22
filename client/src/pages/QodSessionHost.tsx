@@ -37,7 +37,15 @@ const formatTime = (at: string | number) =>
   new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 // Full text of one response — the feed row only shows a single truncated line.
-function ResponseDetailModal({ response, onClose }: { response: ResponseEntry; onClose: () => void }) {
+function ResponseDetailModal({
+  response,
+  onClose,
+  onDelete,
+}: {
+  response: ResponseEntry;
+  onClose: () => void;
+  onDelete: () => void;
+}) {
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -59,13 +67,25 @@ function ResponseDetailModal({ response, onClose }: { response: ResponseEntry; o
             <p className="text-brand-accent font-bold text-lg">{response.displayName}</p>
             <p className="text-slate-500 text-sm">{formatTime(response.at)}</p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-brand-text/60 hover:bg-brand-text/10 hover:text-brand-text"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onDelete}
+              title="Delete this response"
+              aria-label="Delete response"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-red-400 hover:bg-red-600 hover:text-white transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
+              </svg>
+            </button>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-brand-text/60 hover:bg-brand-text/10 hover:text-brand-text"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <p className="whitespace-pre-wrap break-words text-3xl">{response.text}</p>
       </div>
@@ -351,7 +371,7 @@ export default function QodSessionHost() {
             <span className="text-xl font-bold">student{participantCount !== 1 ? "s" : ""} joined</span>
           </div>
 
-          <div className="flex flex-wrap gap-3 justify-center max-w-2xl mb-10">
+          <div className="flex flex-wrap-reverse gap-3 justify-center max-w-2xl mb-10">
             {participants.map((p) => (
               <button
                 key={p.participantId}
@@ -451,7 +471,16 @@ export default function QodSessionHost() {
         onCancel={() => setRemoveTarget(null)}
       />
 
-      {viewResponse && <ResponseDetailModal response={viewResponse} onClose={() => setViewResponse(null)} />}
+      {viewResponse && (
+        <ResponseDetailModal
+          response={viewResponse}
+          onClose={() => setViewResponse(null)}
+          onDelete={() => {
+            setDeleteTarget(viewResponse);
+            setViewResponse(null);
+          }}
+        />
+      )}
     </div>
   );
 }

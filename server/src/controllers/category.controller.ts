@@ -4,7 +4,7 @@ import prisma from "../config/prisma";
 import { ApiError } from "../utils/ApiError";
 import { asyncHandler } from "../utils/asyncHandler";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { DEFAULT_CATEGORY, resolveCategory } from "../utils/categories";
+import { DEFAULT_CATEGORY, resolveCategory, cleanCategoryName } from "../utils/categories";
 
 const isDefault = (name: string) => name.toLowerCase() === DEFAULT_CATEGORY.toLowerCase();
 
@@ -76,6 +76,62 @@ export const createCategory = asyncHandler(async (req: AuthRequest, res: Respons
   res.status(201).json({
     success: true,
     data: { id: row.id, name: row.name, quizCount, isDefault: isDefault(row.name) },
+  });
+});
+
+
+// Renames a category (name only — color/description aren't a thing here). Never
+// Generic, and collides are rejected rather than silently merged, since merging
+// two categories' quizzes together is a bigger action than a rename implies.
+export const renameCategory = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const hostId = req.hostId!;
+
+  const category = await prisma.category.findUnique({ where: { id: req.params.categoryId } });
+  if (!category || category.hostId !== hostId) throw new ApiError(404, "Category not found");
+
+  if (isDefault(category.name)) {
+    throw new ApiError(400, "The Generic category can't be renamed");
+  }
+
+  const raw = req.body.name;
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new ApiError(400, "Category name is required");
+  }
+  const newName = cleanCategoryName(raw);
+
+  const collision = await prisma.category.findFirst({
+    where: { hostId, type: category.type, name: { equals: newName, mode: "insensitive" }, id: { not: category.id } },
+  });
+  if (collision) {
+    throw new ApiError(400, `A category named "${collision.name}" already exists`);
+  }
+
+  const oldName = category.name;
+  const updated = await prisma.category.update({ where: { id: category.id }, data: { name: newName } });
+
+  // Quiz/QodQuiz store the category as a plain string, not a foreign key — every
+  // quiz currently using the old name must move to the new one, or this would
+  // silently orphan them (same fix-up pattern getCategories already applies).
+  if (category.type === "QOD") {
+    await prisma.qodQuiz.updateMany({
+      where: { hostId, category: { equals: oldName, mode: "insensitive" } },
+      data: { category: updated.name },
+    });
+  } else {
+    await prisma.quiz.updateMany({
+      where: { hostId, category: { equals: oldName, mode: "insensitive" } },
+      data: { category: updated.name },
+    });
+  }
+
+  const quizCount =
+    category.type === "QOD"
+      ? await prisma.qodQuiz.count({ where: { hostId, deletedAt: null, category: { equals: updated.name, mode: "insensitive" } } })
+      : await prisma.quiz.count({ where: { hostId, deletedAt: null, category: { equals: updated.name, mode: "insensitive" } } });
+
+  res.json({
+    success: true,
+    data: { id: updated.id, name: updated.name, quizCount, isDefault: isDefault(updated.name) },
   });
 });
 

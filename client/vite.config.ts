@@ -50,4 +50,20 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // Reorganizes output for better browser caching across deploys -- does NOT
+    // shrink total bytes. Vendor code changes far less often than our own, so
+    // splitting it out means a future deploy only invalidates our own chunk,
+    // not React/Router/Socket.IO too. The real size fix was removing Tiptap's
+    // leak from RichText.tsx (see richTextShared.ts) -- this is a separate,
+    // smaller improvement on top of that.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+          socket: ["socket.io-client"],
+        },
+      },
+    },
+  },
 });

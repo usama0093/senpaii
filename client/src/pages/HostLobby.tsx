@@ -344,7 +344,7 @@ function HostLobbyScreen() {
             <span className="text-xl font-bold">player{participants.length !== 1 ? "s" : ""} joined</span>
           </div>
 
-          <div className="flex flex-wrap gap-3 justify-center max-w-2xl mb-10">
+          <div className="flex flex-wrap-reverse gap-3 justify-center max-w-2xl mb-10">
             {participants.map((p) => (
               <button
                 key={p.participantId}

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { CategoryItem } from "../hooks/useCategories";
 import ConfirmModal from "./ConfirmModal";
+import RenameModal from "./RenameModal";
 
 interface Props {
   value: string;
@@ -9,6 +10,7 @@ interface Props {
   categories: CategoryItem[];
   onAdd: (name: string) => Promise<CategoryItem>;
   onRemove: (id: string) => Promise<void>;
+  onRename: (id: string, name: string) => Promise<CategoryItem>;
 }
 
 const MAX_HEIGHT = 288; // 18rem
@@ -22,7 +24,7 @@ interface PanelPos {
   maxHeight: number;
 }
 
-export default function CategoryPicker({ value, onChange, categories, onAdd, onRemove }: Props) {
+export default function CategoryPicker({ value, onChange, categories, onAdd, onRemove, onRename }: Props) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -32,6 +34,8 @@ export default function CategoryPicker({ value, onChange, categories, onAdd, onR
   const panelRef = useRef<HTMLDivElement>(null);
   // Delete confirmation (replaces window.confirm) — the category waiting to be confirmed, or null if closed
   const [confirmCategory, setConfirmCategory] = useState<CategoryItem | null>(null);
+  // Rename modal — the category currently being renamed, or null if closed
+  const [renamingCategory, setRenamingCategory] = useState<CategoryItem | null>(null);
 
   const close = () => {
     setOpen(false);
@@ -124,6 +128,17 @@ export default function CategoryPicker({ value, onChange, categories, onAdd, onR
     }
   };
 
+  // Runs the actual rename once RenameModal's Save is confirmed. Left to throw on
+  // failure — RenameModal itself catches and displays the error, same as every
+  // other use of RenameModal in the app.
+  const handleSaveRename = async (newName: string) => {
+    if (!renamingCategory) return;
+    const target = renamingCategory;
+    const updated = await onRename(target.id, newName);
+    if (current.toLowerCase() === target.name.toLowerCase()) onChange(updated.name); // keep selection pointing at it
+    setRenamingCategory(null);
+  };
+
   return (
     <div>
       <button
@@ -167,6 +182,24 @@ export default function CategoryPicker({ value, onChange, categories, onAdd, onR
                 >
                   {c.name}
                 </button>
+
+                {/* Edit: any non-Generic category can be renamed, regardless of
+                    whether it's in use. Sits left of Delete when Delete is also
+                    shown; takes Delete's slot (rightmost) when Delete is hidden. */}
+                {!c.isDefault && (
+                  <button
+                    type="button"
+                    onClick={() => setRenamingCategory(c)}
+                    title="Rename this category"
+                    aria-label={`Rename category ${c.name}`}
+                    className="px-3 py-2 text-brand-text/50 hover:text-brand-accent"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                )}
 
                 {/* Trash icon: only for categories no quiz uses (never Generic) */}
                 {!c.isDefault && c.quizCount === 0 && (
@@ -235,6 +268,13 @@ export default function CategoryPicker({ value, onChange, categories, onAdd, onR
         confirmLabel="Delete"
         onConfirm={handleConfirmRemove}
         onCancel={() => setConfirmCategory(null)}
+      />
+
+      <RenameModal
+        open={!!renamingCategory}
+        initialValue={renamingCategory?.name || ""}
+        onCancel={() => setRenamingCategory(null)}
+        onSave={handleSaveRename}
       />
     </div>
   );

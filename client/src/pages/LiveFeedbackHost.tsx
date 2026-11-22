@@ -10,6 +10,7 @@ import SettingsMenu from "../components/SettingsMenu";
 
 interface FeedbackMessage {
   id: string;
+  participantId: string;
   name: string;
   text: string;
   at: number;
@@ -25,7 +26,15 @@ const formatTime = (at: number) =>
   new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 // Full text of one message — the feed row only shows a single truncated line.
-function FeedbackDetailModal({ message, onClose }: { message: FeedbackMessage; onClose: () => void }) {
+function FeedbackDetailModal({
+  message,
+  onClose,
+  onDelete,
+}: {
+  message: FeedbackMessage;
+  onClose: () => void;
+  onDelete: () => void;
+}) {
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -47,13 +56,25 @@ function FeedbackDetailModal({ message, onClose }: { message: FeedbackMessage; o
             <p className="text-brand-accent font-bold text-lg">{message.name}</p>
             <p className="text-slate-500 text-sm">{formatTime(message.at)}</p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-brand-text/60 hover:bg-brand-text/10 hover:text-brand-text"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onDelete}
+              title="Delete this feedback"
+              aria-label="Delete feedback"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-red-400 hover:bg-red-600 hover:text-white transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
+              </svg>
+            </button>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-brand-text/60 hover:bg-brand-text/10 hover:text-brand-text"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <p className="whitespace-pre-wrap break-words text-3xl">{message.text}</p>
       </div>
@@ -74,6 +95,7 @@ export default function LiveFeedbackHost() {
   const [confirmEndOpen, setConfirmEndOpen] = useState(false);
   const [viewMessage, setViewMessage] = useState<FeedbackMessage | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FeedbackMessage | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<{ participantId: string; name: string } | null>(null);
   const [allowNameEdit, setAllowNameEdit] = useState(false);
 
   useEffect(() => {
@@ -103,6 +125,10 @@ export default function LiveFeedbackHost() {
         socket.on("feedback:message-deleted", ({ messageId }: { messageId: string }) =>
           setMessages((prev) => prev.filter((m) => m.id !== messageId))
         );
+        socket.on("feedback:participant-removed", ({ participantId }: { participantId: string }) => {
+          setMessages((prev) => prev.filter((m) => m.participantId !== participantId));
+          setJoined((prev) => Math.max(0, prev - 1));
+        });
         socket.on("feedback:stats", ({ joined }: { joined: number }) => setJoined(joined));
         socket.on("feedback:settings-update", (settings: { allowNameEdit: boolean }) => {
           setAllowNameEdit(settings.allowNameEdit);
@@ -119,6 +145,7 @@ export default function LiveFeedbackHost() {
       socket.off("connect");
       socket.off("feedback:new");
       socket.off("feedback:message-deleted");
+      socket.off("feedback:participant-removed");
       socket.off("feedback:stats");
       socket.off("feedback:settings-update");
       socket.off("feedback:ended");
@@ -150,6 +177,19 @@ export default function LiveFeedbackHost() {
       setMessages((prev) => prev.filter((m) => m.id !== target.id));
     } catch (err: any) {
       setError(err.response?.data?.message || "Could not delete the feedback");
+    }
+  };
+
+  const handleConfirmRemoveParticipant = async () => {
+    if (!removeTarget) return;
+    const target = removeTarget;
+    setRemoveTarget(null);
+    try {
+      await api.delete(`/sessions/feedback/live/${pin}/participants/${target.participantId}`);
+      // The actual removal from the feed happens via the "feedback:participant-removed"
+      // socket broadcast above, same pattern as every other live update on this page.
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Could not remove the participant");
     }
   };
 
@@ -232,7 +272,16 @@ export default function LiveFeedbackHost() {
               <p className="text-2xl mt-1 truncate">{m.text}</p>
             </button>
             <div onClick={(e) => e.stopPropagation()}>
-              <MoreMenu items={[{ label: "Delete", onClick: () => setDeleteTarget(m), danger: true }]} />
+              <MoreMenu
+                items={[
+                  { label: "Delete", onClick: () => setDeleteTarget(m), danger: true },
+                  {
+                    label: "Remove participant",
+                    onClick: () => setRemoveTarget({ participantId: m.participantId, name: m.name }),
+                    danger: true,
+                  },
+                ]}
+              />
             </div>
           </div>
         ))}
@@ -256,7 +305,25 @@ export default function LiveFeedbackHost() {
         onCancel={() => setDeleteTarget(null)}
       />
 
-      {viewMessage && <FeedbackDetailModal message={viewMessage} onClose={() => setViewMessage(null)} />}
+      <ConfirmModal
+        open={!!removeTarget}
+        title="Remove participant?"
+        message={`Remove ${removeTarget?.name} from this session? They can rejoin with the PIN if needed, and their past feedback will be removed from this feed.`}
+        confirmLabel="Remove"
+        onConfirm={handleConfirmRemoveParticipant}
+        onCancel={() => setRemoveTarget(null)}
+      />
+
+      {viewMessage && (
+        <FeedbackDetailModal
+          message={viewMessage}
+          onClose={() => setViewMessage(null)}
+          onDelete={() => {
+            setDeleteTarget(viewMessage);
+            setViewMessage(null);
+          }}
+        />
+      )}
     </div>
   );
 }

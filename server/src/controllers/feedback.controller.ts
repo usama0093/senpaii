@@ -20,8 +20,10 @@ import {
   hostView,
   removeSession,
   removeMessage,
+  removeParticipant,
   renameParticipant,
   studentRoom,
+  studentPrivateRoom,
 } from "../socket/liveFeedback";
 
 function getOwnedSession(pin: string, hostId: string) {
@@ -76,10 +78,10 @@ export const joinLiveFeedback = asyncHandler(async (req: Request, res: Response)
   if (!session) throw new ApiError(404, "No live feedback session found with that PIN");
   if (session.participants.size >= MAX_PARTICIPANTS) throw new ApiError(400, "This session is full");
 
-  const { name, token } = addParticipant(session);
+  const { name, token, participantId } = addParticipant(session);
   getIO().to(hostRoom(pin)).emit("feedback:stats", { joined: session.participants.size });
 
-  res.status(201).json({ success: true, data: { pin, name, token, allowNameEdit: session.settings.allowNameEdit } });
+  res.status(201).json({ success: true, data: { pin, name, token, participantId, allowNameEdit: session.settings.allowNameEdit } });
 });
 
 // A student overrides their anonymous name — only works while the host's
@@ -93,6 +95,10 @@ export const renameLiveFeedbackParticipant = asyncHandler(async (req: Request, r
   }
 
   const { token } = req.params;
+  if (!session.participants.has(token)) {
+    throw new ApiError(410, "You were removed from this session");
+  }
+
   const { displayName } = req.body;
   if (!displayName || typeof displayName !== "string" || displayName.trim().length < 2) {
     throw new ApiError(400, "Name must be at least 2 characters");
@@ -111,7 +117,7 @@ export const sendLiveFeedback = asyncHandler(async (req: Request, res: Response)
 
   const { token, text } = req.body;
   const participant = typeof token === "string" ? session.participants.get(token) : undefined;
-  if (!participant) throw new ApiError(400, "Please rejoin the session with the Feedback PIN");
+  if (!participant) throw new ApiError(410, "You were removed from this session");
 
   const message = typeof text === "string" ? text.trim() : "";
   if (!message) throw new ApiError(400, "Write some feedback first");
@@ -130,6 +136,7 @@ export const sendLiveFeedback = asyncHandler(async (req: Request, res: Response)
 
   const entry: FeedbackMessage = {
     id: crypto.randomBytes(8).toString("hex"),
+    participantId: participant.id,
     name: participant.name,
     text: message,
     at: now,
@@ -175,4 +182,19 @@ export const deleteLiveFeedbackMessage = asyncHandler(async (req: AuthRequest, r
   getIO().to(hostRoom(session.pin)).emit("feedback:message-deleted", { messageId: req.params.messageId });
 
   res.json({ success: true, message: "Feedback deleted" });
+});
+
+// Host removes a participant entirely — they can no longer send or rename (future
+// attempts get a 410), their past messages vanish from the host's feed, and if
+// they're still connected, their own screen jumps straight to "You were removed"
+// instead of silently failing on their next action.
+export const deleteLiveFeedbackParticipant = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const session = getOwnedSession(req.params.pin, req.hostId!);
+  const removed = removeParticipant(session, req.params.participantId);
+  if (!removed) throw new ApiError(404, "Participant not found");
+
+  getIO().to(hostRoom(session.pin)).emit("feedback:participant-removed", { participantId: req.params.participantId });
+  getIO().to(studentPrivateRoom(session.pin, req.params.participantId)).emit("feedback:removed");
+
+  res.json({ success: true, message: "Participant removed" });
 });

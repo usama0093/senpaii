@@ -1,4 +1,4 @@
-import { RICH_TEXT_CONTENT_CLASS } from "./RichTextEditor";
+import { RICH_TEXT_CONTENT_CLASS } from "./richTextShared";
 
 // Read-only display of saved rich-text HTML. Safe with dangerouslySetInnerHTML
 // because Tiptap — the only thing that ever produces this HTML — only emits tags

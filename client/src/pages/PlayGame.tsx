@@ -78,7 +78,12 @@ export default function PlayGame() {
   const [question, setQuestion] = useState<Question | null>(null);
   const [intro, setIntro] = useState<Intro | null>(null);
   const [timeLeft, setTimeLeft] = useState(0);
-  const [lastResult, setLastResult] = useState<{ isCorrect: boolean; pointsAwarded: number } | null>(null);
+  const [lastResult, setLastResult] = useState<{ isCorrect: boolean; pointsAwarded: number; selectedOptionId?: string } | null>(null);
+  // Decoupled from `question` on purpose: a cold reconnect landing directly on an
+  // already-ended question's leaderboard never receives "question:new" this
+  // session, so `question` stays null — this is what the swatch actually maps a
+  // color from, kept in sync by every source that carries option data.
+  const [recapOptions, setRecapOptions] = useState<{ id: string; text: string }[] | null>(null);
   const [myEntry, setMyEntry] = useState<MyEntry | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [allowNameEditAtEnd, setAllowNameEditAtEnd] = useState(false);
@@ -141,8 +146,9 @@ export default function PlayGame() {
 
     socket.on(
       "question:new",
-      (q: Question & { alreadyAnswered?: boolean; result?: { isCorrect: boolean; pointsAwarded: number } }) => {
+      (q: Question & { alreadyAnswered?: boolean; result?: { isCorrect: boolean; pointsAwarded: number; selectedOptionId?: string } }) => {
         setQuestion(q);
+        setRecapOptions(q.options);
         setTimeLeft(q.timeLimit);
         if (q.alreadyAnswered && q.result) {
           // Reconnect only: already submitted before refreshing — go straight to
@@ -156,7 +162,16 @@ export default function PlayGame() {
       }
     );
 
-    socket.on("answer:result", (result: { isCorrect: boolean; pointsAwarded: number }) => {
+    socket.on("answer:result", (result: { isCorrect: boolean; pointsAwarded: number; selectedOptionId?: string }) => {
+      setLastResult(result);
+    });
+
+    // The host corrected a mis-marked answer (HostLobby's "Mark correct instead")
+    // while this student was on the leaderboard for that same question — updates
+    // their Correct/Wrong label and points immediately, no refresh needed. Score/
+    // rank themselves arrive separately via the usual "leaderboard:me" broadcast
+    // the server already sends after every correction.
+    socket.on("answer:corrected", (result: { isCorrect: boolean; pointsAwarded: number; selectedOptionId?: string }) => {
       setLastResult(result);
     });
 
@@ -170,14 +185,20 @@ export default function PlayGame() {
     // Continue-triggered reveal on the Game Over screen (see the JSX below and
     // "game:reveal" further down). The transition to "ended" itself still happens
     // via the existing "game:ended" listener, once the host clicks Final List.
-    socket.on("leaderboard:me", (entry: MyEntry) => {
-      setMyEntry(entry);
-      // Guarded: during a reconnect catch-up this can arrive after the game has
-      // already ended, carrying the student's final score/rank — it must update
-      // myEntry without knocking phase back from "ended" to the ordinary
-      // per-question "leaderboard" screen.
-      setPhase((prev) => (prev === "ended" ? prev : "leaderboard"));
-    });
+    socket.on(
+      "leaderboard:me",
+      (entry: MyEntry & { questionOptions?: { id: string; text: string }[] }) => {
+        setMyEntry(entry);
+        // Sent only on a cold reconnect landing directly on the leaderboard —
+        // without this, the swatch has no option list to map a color from.
+        if (entry.questionOptions) setRecapOptions(entry.questionOptions);
+        // Guarded: during a reconnect catch-up this can arrive after the game has
+        // already ended, carrying the student's final score/rank — it must update
+        // myEntry without knocking phase back from "ended" to the ordinary
+        // per-question "leaderboard" screen.
+        setPhase((prev) => (prev === "ended" ? prev : "leaderboard"));
+      }
+    );
 
     socket.on("game:ended", () => {
       setPhase("ended");
@@ -216,6 +237,7 @@ export default function PlayGame() {
       socket.off("session:waiting");
       socket.off("question:new");
       socket.off("answer:result");
+      socket.off("answer:corrected");
       socket.off("question:ended");
       socket.off("leaderboard:me");
       // socket.off("game:ended");
@@ -425,9 +447,21 @@ export default function PlayGame() {
           <p className="text-lg text-brand-text/80 mb-3">{displayName}</p>
 
           {lastResult ? (
-            <p className={`text-4xl font-extrabold mb-4 ${lastResult.isCorrect ? "text-green-500" : "text-red-500"}`}>
-              {lastResult.isCorrect ? "Correct!" : "Wrong"}
-            </p>
+            <>
+              <p className={`text-4xl font-extrabold mb-4 ${lastResult.isCorrect ? "text-green-500" : "text-red-500"}`}>
+                {lastResult.isCorrect ? "Correct!" : "Wrong"}
+              </p>
+              {lastResult.selectedOptionId && recapOptions && (
+                <div className="flex flex-col items-center gap-1 mb-4">
+                  <span className="text-brand-text/60 text-sm">Your answer</span>
+                  <span
+                    className={`w-24 h-8 ${
+                      optionColors[recapOptions.findIndex((o) => o.id === lastResult.selectedOptionId)] || "bg-slate-700"
+                    }`}
+                  />
+                </div>
+              )}
+            </>
           ) : (
             <p className="text-2xl font-bold text-brand-text/70 mb-4">No answer</p>
           )}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "../api/axios";
 import { socket } from "../socket";
@@ -50,6 +50,27 @@ const optionColors = ["bg-red-600", "bg-blue-600", "bg-yellow-500", "bg-green-60
 // Needed here because the page's own text color is no longer hardcoded white.
 const optionTextColors = ["text-white", "text-white", "text-white", "text-white"];
 
+// Small up/down/neutral indicator next to each Top 5 row — green up, red down,
+// a plain dash when unchanged (also used for a brand-new row on the very first
+// leaderboard of the game, before there's anything to compare against).
+function RankArrow({ direction }: { direction?: "up" | "down" | "same" }) {
+  if (direction === "up") {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-green-400 shrink-0">
+        <path d="M12 19V5M5 12l7-7 7 7" />
+      </svg>
+    );
+  }
+  if (direction === "down") {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-red-400 shrink-0">
+        <path d="M12 5v14M5 12l7 7 7-7" />
+      </svg>
+    );
+  }
+  return <span className="w-3 h-[3px] bg-slate-500 rounded shrink-0" title="No change" />;
+}
+
 // Gold / silver / bronze for the top 3, plain for everyone else.
 const rankBadge = (rank: number) =>
   rank === 1
@@ -80,9 +101,17 @@ function HostLobbyScreen() {
   const [timeLeft, setTimeLeft] = useState(0);
   const [correctOptionId, setCorrectOptionId] = useState<string | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  // Rank-change arrows + smooth reordering (FLIP technique) for the Top 5 list.
+  // Persists across questions within the same game — reset only when the whole
+  // screen remounts for a new session, via HostLobby's key={sessionId} above.
+  const [rankMovement, setRankMovement] = useState<Record<string, "up" | "down" | "same">>({});
+  const prevRanksRef = useRef<Record<string, number>>({});
+  const flipFromRef = useRef<Record<string, number>>({});
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [answeredCount, setAnsweredCount] = useState(0);
   const [optionCounts, setOptionCounts] = useState<Record<string, number>>({});
   const [settings, setSettings] = useState<SessionSettings>({ autoplay: false, showQaToStudents: false, allowNameEdit: false });
+  const [correctionNotice, setCorrectionNotice] = useState("");
   const [removeTarget, setRemoveTarget] = useState<Participant | null>(null);
   const [confirmEndSession, setConfirmEndSession] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
@@ -155,7 +184,44 @@ function HostLobbyScreen() {
       setPhase("revealed");
     });
 
+    // Host corrected a mis-marked answer — updates this ring/checkmark right
+    // away; broadcastLeaderboard (server-side) separately refreshes everyone's
+    // score/rank via the usual "leaderboard:update" event below.
+    socket.on("question:corrected", ({ correctOptionId }: { correctOptionId: string }) => {
+      setCorrectOptionId(correctOptionId);
+      setCorrectionNotice("Correct answer updated — scores recalculated");
+      setTimeout(() => setCorrectionNotice(""), 4000);
+    });
+
     socket.on("leaderboard:update", (data: LeaderboardEntry[]) => {
+      // First (FLIP): capture where each row currently sits, before the reorder.
+      const first: Record<string, number> = {};
+      Object.entries(rowRefs.current).forEach(([id, el]) => {
+        if (el) first[id] = el.getBoundingClientRect().top;
+      });
+      flipFromRef.current = first;
+
+      // Arrow per entry, compared against ranks from the previous update. A
+      // participant with no previous rank (freshly entered the Top 5) only
+      // counts as "up" once there's something to compare against — the very
+      // first leaderboard of the game has nothing to compare, so it's neutral.
+      const hadPrevious = Object.keys(prevRanksRef.current).length > 0;
+      const movement: Record<string, "up" | "down" | "same"> = {};
+      data.forEach((entry) => {
+        const prevRank = prevRanksRef.current[entry.participantId];
+        if (prevRank === undefined) {
+          movement[entry.participantId] = hadPrevious ? "up" : "same";
+        } else if (entry.rank < prevRank) {
+          movement[entry.participantId] = "up";
+        } else if (entry.rank > prevRank) {
+          movement[entry.participantId] = "down";
+        } else {
+          movement[entry.participantId] = "same";
+        }
+      });
+      setRankMovement(movement);
+      prevRanksRef.current = Object.fromEntries(data.map((e) => [e.participantId, e.rank]));
+
       setLeaderboard(data);
       setPhase("leaderboard");
     });
@@ -174,6 +240,7 @@ function HostLobbyScreen() {
       socket.off("answer:count");
       socket.off("question:stats");
       socket.off("question:ended");
+      socket.off("question:corrected");
       socket.off("leaderboard:update");
       socket.off("game:ended");
       socket.off("settings:update");
@@ -188,8 +255,37 @@ function HostLobbyScreen() {
     return () => clearInterval(interval);
   }, [phase, timeLeft]);
 
+  // Last + Invert + Play: rows are already in their new (post-reorder) position
+  // by the time this runs — slide each one back to where it was an instant ago,
+  // then let it transition to its real spot.
+  useLayoutEffect(() => {
+    if (phase !== "leaderboard") return;
+    leaderboard.forEach((entry) => {
+      const el = rowRefs.current[entry.participantId];
+      const firstTop = flipFromRef.current[entry.participantId];
+      if (!el || firstTop === undefined) return; // brand-new row — no prior position to slide from
+      const delta = firstTop - el.getBoundingClientRect().top;
+      if (!delta) return;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${delta}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = "transform 500ms ease";
+        el.style.transform = "";
+      });
+    });
+  }, [leaderboard, phase]);
+
   const handleNextQuestion = () => socket.emit("host:next-question", { sessionId, gamePin });
   const handleSkipTimer = () => socket.emit("host:skip-timer", { sessionId, gamePin });
+
+  // Only reachable while this question's own leaderboard is on screen — the
+  // overlay triggering this is itself scoped to the leaderboard-phase JSX below,
+  // so once Next Question / Final List is clicked, this question can no longer
+  // be corrected.
+  const handleOverrideCorrect = (optionId: string) => {
+    if (!question) return;
+    socket.emit("host:override-correct-answer", { sessionId, questionId: question.questionId, newCorrectOptionId: optionId });
+  };
 
   const handleConfirmRemove = async () => {
     if (!removeTarget) return;
@@ -293,19 +389,34 @@ function HostLobbyScreen() {
           },
         ]}
       />
+      {correctionNotice && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-30 bg-brand-accent text-black font-bold px-4 py-2 rounded-lg shadow-lg">
+          {correctionNotice}
+        </div>
+      )}
+
       {/* Persistent PIN, visible once the game is live — lets a student mid-join.
           The waiting screen already shows a much bigger centered PIN, so this one is
           only needed once that big version is gone. */}
-      {(phase !== "waiting" && phase !== "ended" && !isLastQuestion)&& gamePin && (
-        <div
-          onClick={() => navigator.clipboard.writeText(gamePin)}
-          title="Click to copy"
-          className={`chrome-panel fixed top-6 z-20 border border-brand-text/10 rounded-lg px-4 py-2 cursor-pointer transition ${
-                phase === "question" ? "left-40" : "left-6"
-              }`}
-        >
-          <span className="text-3xl font-extrabold text-brand-accent tracking-widest">{gamePin}</span>
-        </div>
+      {(phase !== "waiting" && phase !== "ended" && !isLastQuestion) && gamePin && (
+        <>
+          {phase === "leaderboard" && question && (
+            <div className="chrome-panel fixed top-6 left-6 z-20 border border-brand-text/10 rounded-lg px-4 py-2">
+              <span className="text-lg font-bold">
+                Question {question.questionNumber} / {question.totalQuestions}
+              </span>
+            </div>
+          )}
+          <div
+            onClick={() => navigator.clipboard.writeText(gamePin)}
+            title="Click to copy"
+            className={`chrome-panel fixed top-6 z-20 border border-brand-text/10 rounded-lg px-4 py-2 cursor-pointer transition ${
+                  phase === "question" ? "left-40" : phase === "leaderboard" ? "left-52" : "left-6"
+                }`}
+          >
+            <span className="text-3xl font-extrabold text-brand-accent tracking-widest">{gamePin}</span>
+          </div>
+        </>
       )}
       {phase === "waiting" && (
         <div className="flex-1 flex flex-col p-6">
@@ -465,7 +576,7 @@ function HostLobbyScreen() {
                     return (
                       <div
                         key={option.id}
-                        className={`relative overflow-hidden rounded-xl ${optionColors[i]} ${
+                        className={`group relative overflow-hidden rounded-xl ${optionColors[i]} ${
                           isCorrect ? "ring-4 ring-brand-text" : ""
                         }`}
                       >
@@ -481,6 +592,18 @@ function HostLobbyScreen() {
                           </span>
                           <span className="font-extrabold text-2xl">{count}</span>
                         </div>
+
+                        {/* Hover-only — never on the option already marked
+                            correct. Reuses the design system's established
+                            black-overlay pattern rather than new chrome. */}
+                        {!isCorrect && (
+                          <button
+                            onClick={() => handleOverrideCorrect(option.id)}
+                            className="absolute inset-0 z-10 flex items-center justify-center bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity text-sm font-bold text-white"
+                          >
+                            Mark correct instead
+                          </button>
+                        )}
                       </div>
                     );
                   })}
@@ -518,6 +641,7 @@ function HostLobbyScreen() {
                   {leaderboard.map((entry) => (
                     <div
                       key={entry.participantId}
+                      ref={(el) => { rowRefs.current[entry.participantId] = el; }}
                       className="bg-slate-900 border border-brand-text/10 rounded-xl px-4 py-3 flex items-center gap-4"
                     >
                       <span
@@ -529,6 +653,7 @@ function HostLobbyScreen() {
                       </span>
                       <span className="flex-1 font-medium truncate">{entry.displayName}</span>
                       <span className="font-extrabold text-2xl text-brand-accent">{entry.score}</span>
+                      <RankArrow direction={rankMovement[entry.participantId]} />
                     </div>
                   ))}
                 </div>

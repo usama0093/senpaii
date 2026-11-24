@@ -161,7 +161,11 @@ export function initSocket(httpServer: HTTPServer): SocketIOServer {
             showAnswers: showQaToStudents,
             ...(alreadyAnswered && {
               alreadyAnswered: true,
-              result: { isCorrect: alreadyAnswered.isCorrect, pointsAwarded: alreadyAnswered.pointsAwarded },
+              result: {
+                isCorrect: alreadyAnswered.isCorrect,
+                pointsAwarded: alreadyAnswered.pointsAwarded,
+                selectedOptionId: alreadyAnswered.selectedOptionId ?? undefined,
+              },
             }),
           });
         } else if (hasIntroTimer(session.id) && currentQuestion) {
@@ -186,11 +190,23 @@ export function initSocket(httpServer: HTTPServer): SocketIOServer {
                 where: { participantId_questionId: { participantId, questionId: currentQuestion.id } },
               });
               if (myAnswer) {
-                socket.emit("answer:result", { isCorrect: myAnswer.isCorrect, pointsAwarded: myAnswer.pointsAwarded });
+                socket.emit("answer:result", {
+                  isCorrect: myAnswer.isCorrect,
+                  pointsAwarded: myAnswer.pointsAwarded,
+                  selectedOptionId: myAnswer.selectedOptionId ?? undefined,
+                });
               }
             }
             const aheadName = index > 0 ? ranked[index - 1].displayName : null;
-            socket.emit("leaderboard:me", { ...ranked[index], aheadName, isFinalQuestion });
+            // A full page reload lands here having never received this question's
+            // own "question:new" this session — questionOptions lets the "Your
+            // answer" swatch map a color without it.
+            socket.emit("leaderboard:me", {
+              ...ranked[index],
+              aheadName,
+              isFinalQuestion,
+              questionOptions: currentQuestion?.options.map((o) => ({ id: o.id, text: o.text })),
+            });
           }
         }
       } catch (err) {
@@ -215,6 +231,20 @@ export function initSocket(httpServer: HTTPServer): SocketIOServer {
       } catch (err: any) {
         console.error("[skip-timer] failed:", err);
         socket.emit("error-message", err.message || "Could not skip timer");
+      }
+    });
+
+    // Host corrects a mis-marked answer. Only reachable while its own leaderboard
+    // is still on screen — the control itself (HostLobby.tsx) only renders there.
+    // Always recomputed from scratch against each student's raw selection, never
+    // incrementally against a previous override, so re-correcting twice never
+    // double-counts.
+    socket.on("host:override-correct-answer", async ({ sessionId, questionId, newCorrectOptionId }) => {
+      try {
+        await overrideCorrectAnswer(sessionId, questionId, newCorrectOptionId);
+      } catch (err: any) {
+        console.error("[override-correct-answer] failed:", err);
+        socket.emit("error-message", err.message || "Could not update the correct answer");
       }
     });
 
@@ -574,6 +604,78 @@ async function endQuestion(sessionId: string, questionId: string) {
   }
 }
 
+// Permanently fixes the quiz's own answer key (so replaying it later doesn't
+// repeat the same mistake), recomputes every affected student's score for THIS
+// session, keeps the frozen report snapshot in sync, and re-broadcasts the
+// leaderboard — the same path used after every normal question ends.
+async function overrideCorrectAnswer(sessionId: string, questionId: string, newCorrectOptionId: string) {
+  const [question, sessionQuestion] = await Promise.all([
+    prisma.question.findUnique({ where: { id: questionId }, include: { options: true } }),
+    prisma.sessionQuestion.findUnique({ where: { sessionId_questionId: { sessionId, questionId } } }),
+  ]);
+  if (!question) throw new Error("This question's data is no longer available");
+
+  const newCorrectOption = question.options.find((o) => o.id === newCorrectOptionId);
+  if (!newCorrectOption) throw new Error("Invalid option selected");
+
+  const alreadyCorrect = question.options.find((o) => o.isCorrect)?.id === newCorrectOptionId;
+  if (alreadyCorrect) return; // no-op
+
+  // 1. Fix the quiz's own answer key.
+  await prisma.$transaction(
+    question.options.map((o) =>
+      prisma.questionOption.update({ where: { id: o.id }, data: { isCorrect: o.id === newCorrectOptionId } })
+    )
+  );
+
+  // 2. Recompute every answer to this question in THIS session from scratch —
+  // never against a previous override's result — using the same speed-based
+  // formula every normal answer already uses.
+  const answers = await prisma.answer.findMany({ where: { questionId, participant: { sessionId } } });
+  const points = sessionQuestion?.pointsSnapshot ?? question.points;
+
+  for (const answer of answers) {
+    const isCorrect = answer.selectedOptionId === newCorrectOptionId;
+    const pointsAwarded = calculatePoints(points, answer.timeTakenMs ?? 0, question.timeLimit, isCorrect);
+    if (pointsAwarded === answer.pointsAwarded && isCorrect === answer.isCorrect) continue;
+
+    const delta = pointsAwarded - answer.pointsAwarded;
+    await prisma.$transaction([
+      prisma.answer.update({
+        where: { id: answer.id },
+        data: { isCorrect, pointsAwarded, correctOptionTextSnapshot: newCorrectOption.text },
+      }),
+      prisma.participant.update({ where: { id: answer.participantId }, data: { score: { increment: delta } } }),
+    ]);
+
+    // Pushes this one student's own Correct/Wrong label and points update right
+    // away — their score/rank arrive separately via the usual leaderboard
+    // broadcast just below, same as every other live update on this page.
+    io.to(participantRoom(answer.participantId)).emit("answer:corrected", {
+      isCorrect,
+      pointsAwarded,
+      selectedOptionId: answer.selectedOptionId ?? undefined,
+    });
+  }
+
+  // 3. Keep the frozen report snapshot in sync, so a finished report later shows
+  // the corrected answer too, not just tonight's live leaderboard.
+  if (sessionQuestion) {
+    const snapshot = (sessionQuestion.optionsSnapshot as any[]).map((o) => ({
+      ...o,
+      isCorrect: o.id === newCorrectOptionId,
+    }));
+    await prisma.sessionQuestion.update({ where: { id: sessionQuestion.id }, data: { optionsSnapshot: snapshot } });
+  }
+
+  const gamePin = await getGamePin(sessionId);
+
+  // Updates the host's own Answers panel (ring/checkmark) immediately.
+  io.to(hostRoom(gamePin)).emit("question:corrected", { questionId, correctOptionId: newCorrectOptionId });
+
+  await broadcastLeaderboard(sessionId, gamePin);
+}
+
 async function handleAnswerSubmission(
   socket: Socket,
   sessionId: string,
@@ -620,7 +722,7 @@ async function handleAnswerSubmission(
     data: { score: { increment: pointsAwarded } },
   });
 
-  socket.emit("answer:result", { isCorrect: selectedOption.isCorrect, pointsAwarded });
+  socket.emit("answer:result", { isCorrect: selectedOption.isCorrect, pointsAwarded, selectedOptionId: selectedOption.id });
 
   // Tell the host screen how many have answered so far (host room only).
   const answeredCount = incrementAnsweredCount(sessionId);

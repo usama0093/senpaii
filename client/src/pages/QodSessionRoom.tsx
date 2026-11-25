@@ -26,6 +26,15 @@ interface SubmittedResponse {
 
 const MAX_LENGTH = 300;
 const ROOM_KEY = "qodSessionRoom";
+
+// Timer durations are authored in minutes but still stored/counted in seconds —
+// this only formats the countdown display as mm:ss instead of a raw, now
+// potentially large (up to 1800), seconds count.
+const formatClock = (totalSeconds: number) => {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+};
 const draftKey = (sessionId: string) => `qodDraft:${sessionId}`;
 
 const clearDraft = (sessionId: string) => {
@@ -81,7 +90,20 @@ export default function QodSessionRoom() {
   const [error, setError] = useState("");
   const [ended, setEnded] = useState(room?.status === "ENDED");
   const [removed, setRemoved] = useState(false);
+  // Reference answer (optional, for the student's own self-check — never used for
+  // scoring). The timer is purely visual and has no server-tracked start time
+  // (unlike Quiz Session's server-authoritative countdown), so a refresh mid-
+  // countdown restarts it at the full duration rather than resuming exactly.
+  const [revealedAnswer, setRevealedAnswer] = useState("");
+  const [revealed, setRevealed] = useState(false);
+  const [timeLimit, setTimeLimit] = useState<number | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [responseLimit, setResponseLimit] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const questionIdRef = useRef(questionId);
+  useEffect(() => {
+    questionIdRef.current = questionId;
+  }, [questionId]);
 
   useEffect(() => {
     if (!room) return;
@@ -96,11 +118,25 @@ export default function QodSessionRoom() {
       try {
         const statusRes = await api.get(`/qod-sessions/${room.sessionId}/status`);
         if (cancelled) return;
-        const { status, questionId: liveQuestionId, question: liveQuestion, settings } = statusRes.data.data;
+        const {
+          status,
+          questionId: liveQuestionId,
+          question: liveQuestion,
+          settings,
+          revealed: liveRevealed,
+          answer: liveAnswer,
+          timeLimit: liveTimeLimit,
+          responseLimit: liveResponseLimit,
+        } = statusRes.data.data;
 
         setQuestion(liveQuestion);
         setQuestionId(liveQuestionId);
         if (settings) setAllowNameEdit(settings.allowNameEdit);
+        setRevealed(!!liveRevealed);
+        setRevealedAnswer(liveAnswer || "");
+        setTimeLimit(liveTimeLimit ?? null);
+        setTimeLeft(liveTimeLimit ?? null);
+        setResponseLimit(liveResponseLimit ?? null);
 
         if (status === "ENDED") {
           setEnded(true);
@@ -137,10 +173,28 @@ export default function QodSessionRoom() {
     );
     socket.on(
       "qod-session:question",
-      ({ questionId: newQuestionId, text: newText, index }: { questionId: string; text: string; index: number }) => {
+      ({
+        questionId: newQuestionId,
+        text: newText,
+        index,
+        timeLimit: newTimeLimit,
+        responseLimit: newResponseLimit,
+      }: {
+        questionId: string;
+        text: string;
+        index: number;
+        timeLimit?: number | null;
+        responseLimit?: number | null;
+      }) => {
         setQuestionId(newQuestionId);
         setQuestion(newText);
         setNotice("");
+        // A brand-new question is never revealed yet, whatever the previous one's state was.
+        setRevealed(false);
+        setRevealedAnswer("");
+        setTimeLimit(newTimeLimit ?? null);
+        setTimeLeft(newTimeLimit ?? null);
+        setResponseLimit(newResponseLimit ?? null);
 
         // index 0 is always the session's very first question (the WAITING -> ACTIVE
         // transition on Start). Only a genuine move to a later question — never the
@@ -160,6 +214,15 @@ export default function QodSessionRoom() {
     socket.on("qod-session:participant-removed", ({ participantId }: { participantId: string }) => {
       if (participantId === room.participantId) setRemoved(true);
     });
+    socket.on(
+      "qod-session:answer-revealed",
+      ({ questionId: revealedId, answer: newAnswer }: { questionId: string; answer: string }) => {
+        if (revealedId === questionIdRef.current) {
+          setRevealed(true);
+          setRevealedAnswer(newAnswer);
+        }
+      }
+    );
     socket.on("qod-session:settings-update", (settings: { allowNameEdit: boolean }) => {
       setAllowNameEdit(settings.allowNameEdit);
     });
@@ -172,11 +235,20 @@ export default function QodSessionRoom() {
       socket.off("qod-session:question");
       socket.off("qod-session:response-deleted");
       socket.off("qod-session:participant-removed");
+      socket.off("qod-session:answer-revealed");
       socket.off("qod-session:settings-update");
       socket.off("qod-session:ended");
       socket.disconnect();
     };
   }, [room]);
+
+  // Purely visual — the host still advances manually via Next/Reveal Answer;
+  // reaching 0 does not auto-submit or auto-advance anything.
+  useEffect(() => {
+    if (!timeLimit || timeLeft === null || timeLeft <= 0 || revealed) return;
+    const interval = setInterval(() => setTimeLeft((t) => (t !== null ? Math.max(0, t - 1) : t)), 1000);
+    return () => clearInterval(interval);
+  }, [timeLimit, timeLeft, revealed]);
 
   useEffect(() => {
     if ((ended || removed) && room) {
@@ -247,6 +319,9 @@ export default function QodSessionRoom() {
     saveDraft(room.sessionId, questionId, r.text);
     textareaRef.current?.focus();
   };
+
+  const atLimit = responseLimit != null && responses.length >= responseLimit;
+  const submitDisabled = sending || !text.trim() || !questionId || revealed || (!editingResponseId && atLimit);
 
   const handleSend = async () => {
     const answer = text.trim();
@@ -381,13 +456,31 @@ export default function QodSessionRoom() {
         )}
 
         <div className="surface rounded-xl px-5 py-4 mb-4">
-          <p className="text-slate-400 text-sm mb-1">Question</p>
+          <div className="flex justify-between items-start gap-3 mb-1">
+            <p className="text-slate-400 text-sm">Question</p>
+            {timeLimit !== null && timeLeft !== null && !revealed && (
+              <span className="text-brand-accent font-extrabold text-sm shrink-0">{formatClock(timeLeft)}</span>
+            )}
+          </div>
           {question ? (
             <RichText html={question} className="text-xl" />
           ) : (
             <p className="text-xl text-brand-text/60">Waiting for the host to start...</p>
           )}
         </div>
+
+        {revealed && revealedAnswer && (
+          <div className="surface rounded-xl px-5 py-4 mb-4">
+            <p className="text-slate-400 text-sm mb-1">Reference answer</p>
+            <RichText html={revealedAnswer} className="text-xl" />
+          </div>
+        )}
+
+        {revealed && (
+          <p className="text-brand-text/60 text-sm text-center mb-4">
+            The host has revealed the answer — responses are now closed for this question.
+          </p>
+        )}
 
         {editingResponseId && (
           <div className="flex items-center justify-between bg-brand-text/5 rounded-lg px-3 py-2 mb-2">
@@ -405,7 +498,8 @@ export default function QodSessionRoom() {
           placeholder="Type your answer..."
           value={text}
           onChange={(e) => handleTextChange(e.target.value)}
-          className="w-full bg-slate-800 text-brand-text rounded-lg px-4 py-3 mb-1 resize-none outline-none focus:ring-2 focus:ring-brand-accent"
+          disabled={revealed}
+          className="w-full bg-slate-800 text-brand-text rounded-lg px-4 py-3 mb-1 resize-none outline-none focus:ring-2 focus:ring-brand-accent disabled:opacity-50"
         />
 
         <div className="flex items-center justify-between gap-4 mb-3">
@@ -420,10 +514,20 @@ export default function QodSessionRoom() {
 
         <button
           onClick={handleSend}
-          disabled={sending || !text.trim() || !questionId}
+          disabled={submitDisabled}
           className="w-full bg-brand-accent hover:bg-brand-accent-hover text-black font-bold rounded-lg py-3 disabled:opacity-50"
         >
-          {sending ? "Submitting..." : !questionId ? "Waiting for host..." : editingResponseId ? "Update answer" : "Submit answer"}
+          {sending
+            ? "Submitting..."
+            : !questionId
+            ? "Waiting for host..."
+            : revealed
+            ? "Responses closed"
+            : !editingResponseId && atLimit
+            ? "Response limit reached"
+            : editingResponseId
+            ? "Update answer"
+            : "Submit answer"}
         </button>
 
         {responses.length > 0 && (
@@ -435,7 +539,7 @@ export default function QodSessionRoom() {
                 className="bg-slate-900 border border-brand-text/10 rounded-xl px-4 py-3 flex items-start gap-3"
               >
                 <p className="flex-1 min-w-0 whitespace-pre-wrap break-words">{r.text}</p>
-                <MoreMenu items={[{ label: "Edit", onClick: () => handleEditResponse(r) }]} />
+                {!revealed && <MoreMenu items={[{ label: "Edit", onClick: () => handleEditResponse(r) }]} />}
               </div>
             ))}
           </div>

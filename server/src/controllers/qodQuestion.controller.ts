@@ -15,7 +15,7 @@ export const addQodQuestion = asyncHandler(async (req: AuthRequest, res: Respons
   const { qodQuizId } = req.params;
   await getOwnedQodQuiz(qodQuizId, req.hostId!);
 
-  const { text, timeLimit } = req.body;
+  const { text, timeLimit, answer, responseLimit } = req.body;
   if (typeof text !== "string" || !text.trim()) {
     throw new ApiError(400, "Question text is required");
   }
@@ -27,6 +27,8 @@ export const addQodQuestion = asyncHandler(async (req: AuthRequest, res: Respons
       qodQuizId,
       text: text.trim(),
       timeLimit: typeof timeLimit === "number" ? timeLimit : null,
+      answer: typeof answer === "string" && answer.trim() ? answer.trim() : null,
+      responseLimit: typeof responseLimit === "number" && responseLimit > 0 ? responseLimit : null,
       order: count,
     },
   });
@@ -43,7 +45,7 @@ export const updateQodQuestion = asyncHandler(async (req: AuthRequest, res: Resp
     throw new ApiError(404, "Question not found");
   }
 
-  const { text, timeLimit } = req.body;
+  const { text, timeLimit, answer, responseLimit } = req.body;
   if (text !== undefined && (typeof text !== "string" || !text.trim())) {
     throw new ApiError(400, "Question text is required");
   }
@@ -53,6 +55,13 @@ export const updateQodQuestion = asyncHandler(async (req: AuthRequest, res: Resp
     data: {
       text: text !== undefined ? text.trim() : undefined,
       timeLimit: timeLimit !== undefined ? timeLimit : undefined,
+      answer: answer !== undefined ? (typeof answer === "string" && answer.trim() ? answer.trim() : null) : undefined,
+      responseLimit:
+        responseLimit !== undefined
+          ? typeof responseLimit === "number" && responseLimit > 0
+            ? responseLimit
+            : null
+          : undefined,
     },
   });
 
@@ -119,6 +128,8 @@ export const duplicateQodQuestion = asyncHandler(async (req: AuthRequest, res: R
       qodQuizId,
       text: source.text,
       timeLimit: source.timeLimit,
+      answer: source.answer,
+      responseLimit: source.responseLimit,
       order: count,
     },
   });

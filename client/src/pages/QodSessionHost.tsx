@@ -20,6 +20,11 @@ interface ResponseEntry {
 interface CurrentQuestion {
   id: string;
   text: string;
+  answer?: string | null;
+  revealed?: boolean;
+  hasAnswer?: boolean;
+  timeLimit?: number | null;
+  responseLimit?: number | null;
 }
 
 interface Participant {
@@ -114,6 +119,10 @@ export default function QodSessionHost() {
   const [viewResponse, setViewResponse] = useState<ResponseEntry | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ResponseEntry | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Participant | null>(null);
+  // Host-only, local display toggle — never synced to students, never affects
+  // what they can submit (that's governed by revealed/responseLimit server-side).
+  const [showResponses, setShowResponses] = useState(true);
+  const [revealing, setRevealing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,6 +171,9 @@ export default function QodSessionHost() {
         socket.on("qod-session:settings-update", (settings: { allowNameEdit: boolean }) => {
           setAllowNameEdit(settings.allowNameEdit);
         });
+        socket.on("qod-session:answer-revealed", ({ questionId, answer }: { questionId: string; answer: string }) => {
+          setCurrentQuestion((prev) => (prev && prev.id === questionId ? { ...prev, revealed: true, answer } : prev));
+        });
         socket.on("qod-session:participant-removed", ({ participantId }: { participantId: string }) => {
           setParticipants((prev) => prev.filter((p) => p.participantId !== participantId));
           setResponses((prev) => prev.filter((r) => r.participantId !== participantId));
@@ -183,6 +195,7 @@ export default function QodSessionHost() {
       socket.off("qod-session:stats");
       socket.off("qod-session:participant-renamed");
       socket.off("qod-session:settings-update");
+      socket.off("qod-session:answer-revealed");
       socket.off("qod-session:participant-removed");
       socket.off("qod-session:ended");
       socket.disconnect();
@@ -205,6 +218,20 @@ export default function QodSessionHost() {
       setError(err.response?.data?.message || "Could not advance to the next question");
     } finally {
       setAdvancing(false);
+    }
+  };
+
+  const handleRevealAnswer = async () => {
+    setError("");
+    setRevealing(true);
+    try {
+      await api.put(`/qod-sessions/${sessionId}/reveal`);
+      // The actual update happens via the "qod-session:answer-revealed" socket
+      // broadcast above, same pattern as every other live update on this page.
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Could not reveal the answer");
+    } finally {
+      setRevealing(false);
     }
   };
 
@@ -327,6 +354,15 @@ export default function QodSessionHost() {
                 <span className="text-slate-400 text-base font-semibold ml-1">joined</span>
               </div>
 
+              {currentQuestion?.hasAnswer && !currentQuestion?.revealed && (
+                <button
+                  onClick={handleRevealAnswer}
+                  disabled={revealing}
+                  className="bg-slate-800 hover:bg-slate-700 border border-brand-text/10 text-brand-text hover:text-white font-bold px-5 py-2 rounded-lg transition disabled:opacity-50"
+                >
+                  {revealing ? "Revealing..." : "Reveal Answer"}
+                </button>
+              )}
               {!isLastQuestion && (
                 <button
                   onClick={handleNext}
@@ -411,6 +447,23 @@ export default function QodSessionHost() {
             )}
           </div>
 
+          {currentQuestion?.revealed && currentQuestion.answer && (
+            <div className="max-w-3xl mx-auto surface rounded-xl px-5 py-4 mb-6">
+              <p className="text-slate-400 text-sm mb-1">Reference answer</p>
+              <RichText html={currentQuestion.answer} className="text-xl" />
+            </div>
+          )}
+
+          <div className="max-w-3xl mx-auto flex justify-end mb-2">
+            <button
+              onClick={() => setShowResponses((prev) => !prev)}
+              className="text-slate-400 text-sm hover:text-brand-text hover:underline"
+            >
+              {showResponses ? "Hide responses" : "Show responses"}
+            </button>
+          </div>
+
+          {showResponses && (
           <div className="max-w-3xl mx-auto space-y-3">
             {responses.length === 0 && <p className="text-center text-brand-text/60">Waiting for answers...</p>}
             {responses.map((r) => (
@@ -441,6 +494,7 @@ export default function QodSessionHost() {
               </div>
             ))}
           </div>
+          )}
         </>
       )}
 

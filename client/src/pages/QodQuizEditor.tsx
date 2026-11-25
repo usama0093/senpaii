@@ -15,6 +15,8 @@ interface QodQuestion {
   id: string;
   text: string;
   timeLimit: number | null;
+  answer?: string | null;
+  responseLimit?: number | null;
 }
 
 interface QodQuiz {
@@ -27,6 +29,10 @@ interface QodQuiz {
 }
 
 const blankQodQuiz: QodQuiz = { id: "", title: "", description: null, topic: null, category: "Generic", questions: [] };
+
+const QOD_TIME_OPTIONS_MINUTES = [1, 3, 5, 8, 10, 15, 20, 30]; // authored in minutes, stored as seconds in timeLimit — same unit the student countdown already uses
+const selectClass =
+  "w-full bg-slate-800 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-brand-accent";
 
 // Centered modal: the full question text. Portal-rendered to document.body so it's
 // never clipped by a blurred/overflow-hidden card (design system rule) — same
@@ -95,6 +101,15 @@ export default function QodQuizEditor() {
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Optional per-question fields — all hidden by default, shown only once the
+  // host chooses to add one (or when editing a question that already has one).
+  const [showAnswerField, setShowAnswerField] = useState(false);
+  const [answerText, setAnswerText] = useState("");
+  const [showTimerField, setShowTimerField] = useState(false);
+  const [timeLimit, setTimeLimit] = useState<number | null>(null);
+  const [showLimitField, setShowLimitField] = useState(false);
+  const [responseLimit, setResponseLimit] = useState<number | null>(null);
 
   const [listError, setListError] = useState("");
   const [confirmDeleteQuestionId, setConfirmDeleteQuestionId] = useState<string | null>(null);
@@ -184,12 +199,24 @@ export default function QodQuizEditor() {
     setEditingQuestionId(null);
     setText("");
     setError("");
+    setShowAnswerField(false);
+    setAnswerText("");
+    setShowTimerField(false);
+    setTimeLimit(null);
+    setShowLimitField(false);
+    setResponseLimit(null);
   };
 
   const startEditing = (q: QodQuestion) => {
     setEditingQuestionId(q.id);
     setText(q.text);
     setError("");
+    setShowAnswerField(!!q.answer);
+    setAnswerText(q.answer || "");
+    setShowTimerField(q.timeLimit != null);
+    setTimeLimit(q.timeLimit ?? null);
+    setShowLimitField(q.responseLimit != null);
+    setResponseLimit(q.responseLimit ?? null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -215,6 +242,9 @@ export default function QodQuizEditor() {
       if (editingQuestionId) {
         const res = await api.put(`/qod-quizzes/${activeQuizId}/questions/${editingQuestionId}`, {
           text: text.trim(),
+          answer: showAnswerField && !isRichTextEmpty(answerText) ? answerText : null,
+          timeLimit: showTimerField ? timeLimit : null,
+          responseLimit: showLimitField ? responseLimit : null,
         });
         const updated: QodQuestion = res.data.data;
         setQodQuiz((prev) =>
@@ -225,6 +255,9 @@ export default function QodQuizEditor() {
       } else {
         const res = await api.post(`/qod-quizzes/${activeQuizId}/questions`, {
           text: text.trim(),
+          answer: showAnswerField && !isRichTextEmpty(answerText) ? answerText : null,
+          timeLimit: showTimerField ? timeLimit : null,
+          responseLimit: showLimitField ? responseLimit : null,
         });
         if (isNew) {
           resetForm();
@@ -506,6 +539,117 @@ export default function QodQuizEditor() {
 
             <div className="mb-3">
               <RichTextEditor value={text} onChange={setText} placeholder="Question text" />
+            </div>
+
+            <div className="space-y-3 mb-4">
+              {showAnswerField ? (
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-sm text-slate-400">
+                      Reference answer (optional — for students' own self-check, never used for scoring)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAnswerField(false);
+                        setAnswerText("");
+                      }}
+                      className="text-slate-400 text-xs hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <RichTextEditor
+                    value={answerText}
+                    onChange={setAnswerText}
+                    placeholder="Reference answer"
+                    showToolbar={false}
+                    minHeightClassName="min-h-[52px]"
+                  />
+                </div>
+              ) : (
+                <button type="button" onClick={() => setShowAnswerField(true)} className="text-brand-accent text-sm hover:underline">
+                  + Add reference answer
+                </button>
+              )}
+
+              <div className="flex flex-wrap gap-6">
+                {showTimerField ? (
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Timer</label>
+                      <select
+                        value={timeLimit ?? 60}
+                        onChange={(e) => setTimeLimit(Number(e.target.value))}
+                        className={selectClass}
+                      >
+                        {QOD_TIME_OPTIONS_MINUTES.map((m) => (
+                          <option key={m} value={m * 60}>
+                            {m} minute{m !== 1 ? "s" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowTimerField(false);
+                        setTimeLimit(null);
+                      }}
+                      className="text-slate-400 text-xs hover:underline mb-2"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTimerField(true);
+                      setTimeLimit(60); // defaults to 1 minute
+                    }}
+                    className="text-brand-accent text-sm hover:underline"
+                  >
+                    + Add timer
+                  </button>
+                )}
+
+                {showLimitField ? (
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Response limit</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={responseLimit ?? 1}
+                        onChange={(e) => setResponseLimit(Math.max(1, Number(e.target.value)))}
+                        className="w-24 bg-slate-800 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-brand-accent"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowLimitField(false);
+                        setResponseLimit(null);
+                      }}
+                      className="text-slate-400 text-xs hover:underline mb-2"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowLimitField(true);
+                      setResponseLimit(1);
+                    }}
+                    className="text-brand-accent text-sm hover:underline"
+                  >
+                    + Limit responses
+                  </button>
+                )}
+              </div>
             </div>
 
             {error && <p className="text-brand-error text-sm mb-3">{error}</p>}

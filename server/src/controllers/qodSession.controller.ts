@@ -36,11 +36,15 @@ async function getOwnedQodSession(sessionId: string, hostId: string) {
   return session as typeof session & { qodQuiz: NonNullable<typeof session.qodQuiz> };
 }
 
-function currentQuestionOf(session: {
+// Generic over Q so the return type matches whatever shape of question array the
+// caller actually passed in (the full QodQuestion row everywhere in this file) —
+// previously hardcoded to {id, text}, which silently hid .answer/.timeLimit/
+// .responseLimit from every caller without a manual cast.
+function currentQuestionOf<Q extends { id: string; text: string }>(session: {
   status: string;
   currentQuestionIndex: number;
-  qodQuiz: { questions: { id: string; text: string }[] } | null;
-}) {
+  qodQuiz: { questions: Q[] } | null;
+}): Q | null {
   // This is the actual root cause of several downstream bugs: without the status
   // check, a session still in WAITING would report its first question as "current"
   // just because currentQuestionIndex defaults to 0 — even though nothing has
@@ -107,6 +111,11 @@ export const getQodSession = asyncHandler(async (req: AuthRequest, res: Response
 
   const currentQuestion = currentQuestionOf(session);
   const totalQuestions = session.qodQuiz.questions.length;
+  const sessionQuestionState = currentQuestion
+    ? await prisma.qodSessionQuestion.findUnique({
+        where: { sessionId_questionId: { sessionId: session.id, questionId: currentQuestion.id } },
+      })
+    : null;
 
   // Every response to the current question, newest first — a resubmitted answer
   // is a new row, so it naturally lands on top without any extra logic.
@@ -134,7 +143,17 @@ export const getQodSession = asyncHandler(async (req: AuthRequest, res: Response
       status: session.status,
       currentQuestionIndex: session.currentQuestionIndex,
       totalQuestions,
-      currentQuestion: currentQuestion ? { id: currentQuestion.id, text: currentQuestion.text } : null,
+      currentQuestion: currentQuestion
+        ? {
+            id: currentQuestion.id,
+            text: currentQuestion.text,
+            timeLimit: currentQuestion.timeLimit,
+            responseLimit: currentQuestion.responseLimit,
+            hasAnswer: !!(currentQuestion.answer && currentQuestion.answer.trim()),
+            revealed: sessionQuestionState?.revealed ?? false,
+            answer: sessionQuestionState?.revealed ? sessionQuestionState.answerSnapshot : null,
+          }
+        : null,
       participantCount: participants.length,
       // Shown on the waiting screen before the session starts, same as Quiz Session's lobby.
       participants: participants.map((p) => ({ participantId: p.id, displayName: p.displayName })),
@@ -176,16 +195,79 @@ export const nextQodQuestion = asyncHandler(async (req: AuthRequest, res: Respon
 
   await prisma.qodSessionQuestion.upsert({
     where: { sessionId_questionId: { sessionId: session.id, questionId: question.id } },
-    create: { sessionId: session.id, questionId: question.id, order: nextIndex + 1, questionTextSnapshot: question.text },
+    create: {
+      sessionId: session.id,
+      questionId: question.id,
+      order: nextIndex + 1,
+      questionTextSnapshot: question.text,
+      // Frozen now, at question-start — so a quiz edit made mid-session can never
+      // change what gets shown when the host later reveals it.
+      answerSnapshot: question.answer ?? null,
+    },
     update: {},
   });
 
   getIO()
     .to(studentRoom(updated.gamePin))
     .to(hostRoom(updated.gamePin))
-    .emit("qod-session:question", { questionId: question.id, text: question.text, index: nextIndex, totalQuestions });
+    .emit("qod-session:question", {
+      questionId: question.id,
+      text: question.text,
+      index: nextIndex,
+      totalQuestions,
+      timeLimit: question.timeLimit,
+      responseLimit: question.responseLimit,
+    });
 
-  res.json({ success: true, data: { currentQuestionIndex: nextIndex, question: { id: question.id, text: question.text } } });
+  res.json({
+    success: true,
+    data: {
+      currentQuestionIndex: nextIndex,
+      question: {
+        id: question.id,
+        text: question.text,
+        timeLimit: question.timeLimit,
+        responseLimit: question.responseLimit,
+        hasAnswer: !!(question.answer && question.answer.trim()),
+        revealed: false,
+        answer: null,
+      },
+    },
+  });
+});
+
+// Host reveals the reference answer for the CURRENT question — this closes new
+// submissions and edits for it (enforced in submitQodResponse/updateQodResponse
+// below) and lets students compare their own responses against it. Reads the
+// snapshot taken when the question started (not the live QodQuestion.answer), so
+// a quiz edit made after the question was asked can't retroactively change what
+// gets revealed. Recorded on the session's own per-question row, so a
+// reconnecting student — or the report, afterward — sees it as revealed too, not
+// just whoever happened to be connected at the moment the host clicked it.
+export const revealQodAnswer = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const session = await getOwnedQodSession(req.params.sessionId, req.hostId!);
+  if (session.status !== "ACTIVE") throw new ApiError(400, "There is no active question right now");
+
+  const currentQuestion = currentQuestionOf(session);
+  if (!currentQuestion) throw new ApiError(400, "There is no active question right now");
+
+  const existingState = await prisma.qodSessionQuestion.findUnique({
+    where: { sessionId_questionId: { sessionId: session.id, questionId: currentQuestion.id } },
+  });
+  const answer = existingState?.answerSnapshot;
+  if (!answer || !answer.trim()) throw new ApiError(400, "This question has no reference answer to reveal");
+
+  await prisma.qodSessionQuestion.update({
+    where: { sessionId_questionId: { sessionId: session.id, questionId: currentQuestion.id } },
+    data: { revealed: true },
+  });
+
+  getIO()
+    .to(studentRoom(session.gamePin))
+    .to(hostRoom(session.gamePin))
+    .emit("qod-session:answer-revealed", { questionId: currentQuestion.id, answer });
+
+  res.json({ success: true, data: { questionId: currentQuestion.id, answer } });
 });
 
 // Ends the session for good — it can no longer be resumed or joined.
@@ -312,6 +394,11 @@ export const getQodSessionPublicStatus = asyncHandler(async (req: Request, res: 
   if (!session || session.deletedAt) throw new ApiError(404, "Session not found");
 
   const currentQuestion = currentQuestionOf(session);
+  const sessionQuestionState = currentQuestion
+    ? await prisma.qodSessionQuestion.findUnique({
+        where: { sessionId_questionId: { sessionId: session.id, questionId: currentQuestion.id } },
+      })
+    : null;
 
   res.json({
     success: true,
@@ -319,6 +406,10 @@ export const getQodSessionPublicStatus = asyncHandler(async (req: Request, res: 
       status: session.status,
       questionId: currentQuestion?.id ?? null,
       question: currentQuestion?.text ?? "",
+      timeLimit: currentQuestion?.timeLimit ?? null,
+      responseLimit: currentQuestion?.responseLimit ?? null,
+      revealed: sessionQuestionState?.revealed ?? false,
+      answer: sessionQuestionState?.revealed ? sessionQuestionState.answerSnapshot : null,
       settings: getQodSessionSettings(session.id),
     },
   });
@@ -477,13 +568,35 @@ export const submitQodResponse = asyncHandler(async (req: Request, res: Response
     throw new ApiError(400, "This question is no longer active");
   }
 
+  const sessionQuestionState = await prisma.qodSessionQuestion.findUnique({
+    where: { sessionId_questionId: { sessionId, questionId } },
+  });
+  if (sessionQuestionState?.revealed) {
+    throw new ApiError(400, "The host has revealed the answer — responses are closed for this question");
+  }
+
   const participant = await prisma.qodParticipant.findUnique({ where: { id: participantId } });
   if (!participant || participant.sessionId !== sessionId) {
     throw new ApiError(400, "Please rejoin the session with the QOD PIN");
   }
 
+  // A configured limit applies only to brand-new submissions — editing an
+  // existing response (updateQodResponse, below) never counts toward it.
+  if (currentQuestion.responseLimit != null) {
+    const existingCount = await prisma.qodResponse.count({ where: { participantId, questionId } });
+    if (existingCount >= currentQuestion.responseLimit) {
+      throw new ApiError(
+        400,
+        `You've reached the limit of ${currentQuestion.responseLimit} response${
+          currentQuestion.responseLimit !== 1 ? "s" : ""
+        } for this question`
+      );
+    }
+  }
+
   // Each submission is its own row now — students can send as many as they want
-  // per question, and the newest one is what shows on top of the host's feed.
+  // per question (up to any configured limit above), and the newest one is what
+  // shows on top of the host's feed.
   const response = await prisma.qodResponse.create({
     data: { participantId, questionId, text: answerText, questionTextSnapshot: currentQuestion.text },
   });
@@ -526,6 +639,13 @@ export const updateQodResponse = asyncHandler(async (req: Request, res: Response
 
   const currentQuestion = currentQuestionOf(session);
   if (!currentQuestion) throw new ApiError(400, "This question is no longer active");
+
+  const sessionQuestionState = await prisma.qodSessionQuestion.findUnique({
+    where: { sessionId_questionId: { sessionId, questionId: currentQuestion.id } },
+  });
+  if (sessionQuestionState?.revealed) {
+    throw new ApiError(400, "The host has revealed the answer — responses are closed for this question");
+  }
 
   const existing = await prisma.qodResponse.findUnique({ where: { id: responseId } });
   if (!existing || existing.participantId !== participantId || existing.questionId !== currentQuestion.id) {

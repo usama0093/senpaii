@@ -5,6 +5,7 @@ import {
   getQodSession,
   getAllQodSessions,
   nextQodQuestion,
+  revealQodAnswer,
   endQodSession,
   submitQodResponse,
   updateQodResponse,
@@ -30,6 +31,7 @@ router.get("/", protect, getAllQodSessions);
 router.get("/:sessionId", protect, getQodSession);
 router.get("/:sessionId/report", protect, getQodSessionReport);
 router.put("/:sessionId/next", protect, nextQodQuestion);
+router.put("/:sessionId/reveal", protect, revealQodAnswer);
 router.delete("/:sessionId/responses/:responseId", protect, deleteQodResponse);
 router.delete("/:sessionId/participants/:participantId", protect, removeQodParticipant);
 router.put("/:sessionId/participants/:participantId/name", protect, renameQodReportParticipant); // host only — report correction

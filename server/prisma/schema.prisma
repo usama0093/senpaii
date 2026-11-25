@@ -173,14 +173,16 @@ model QodQuiz {
 }
 
 model QodQuestion {
-  id        String        @id @default(uuid())
-  qodQuizId String
-  qodQuiz   QodQuiz       @relation(fields: [qodQuizId], references: [id], onDelete: Cascade)
-  text      String
-  timeLimit Int?
-  order     Int
-  createdAt DateTime      @default(now())
-  deletedAt DateTime?
+  id            String        @id @default(uuid())
+  qodQuizId     String
+  qodQuiz       QodQuiz       @relation(fields: [qodQuizId], references: [id], onDelete: Cascade)
+  text          String
+  timeLimit     Int?
+  answer        String?       // optional reference answer — student self-check only, never used for scoring
+  responseLimit Int?          // optional cap on NEW submissions per student for this question; edits never count against it
+  order         Int
+  createdAt     DateTime      @default(now())
+  deletedAt     DateTime?
 }
 
 enum QodSessionStatus {
@@ -219,6 +221,8 @@ model QodSessionQuestion {
   session              QodSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   questionId           String     // informational only — no FK
   questionTextSnapshot String
+  answerSnapshot       String?    // the reference answer as it was when this question started, frozen so a later quiz edit can't change what was actually shown
+  revealed             Boolean    @default(false) // host clicked "Reveal Answer" for this question
   order                Int
   askedAt              DateTime   @default(now())
 

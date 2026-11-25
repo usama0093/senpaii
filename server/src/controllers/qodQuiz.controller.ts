@@ -118,6 +118,8 @@ export const duplicateQodQuiz = asyncHandler(async (req: AuthRequest, res: Respo
         create: source.questions.map((q, index) => ({
           text: q.text,
           timeLimit: q.timeLimit,
+          answer: q.answer,
+          responseLimit: q.responseLimit,
           order: index,
         })),
       },

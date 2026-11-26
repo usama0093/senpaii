@@ -727,7 +727,7 @@ async function handleAnswerSubmission(
   // Tell the host screen how many have answered so far (host room only).
   const answeredCount = incrementAnsweredCount(sessionId);
   const gamePin = await getGamePin(sessionId);
-  io.to(hostRoom(gamePin)).emit("answer:count", { answered: answeredCount, total: active.totalParticipants });
+    io.to(gamePin).to(hostRoom(gamePin)).emit("answer:count", { answered: answeredCount, total: active.totalParticipants });
 
   // Everyone answered? End now instead of waiting out the timer.
   if (answeredCount >= active.totalParticipants) {

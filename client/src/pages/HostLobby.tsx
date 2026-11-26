@@ -516,7 +516,7 @@ function HostLobbyScreen() {
             </div>
           </div>
           <div className="flex justify-center mb-6">
-            <RichText html={question.text} className="text-4xl font-bold" />
+            <RichText html={question.text} className="text-4xl font-normal" />
           </div>
           <div className="flex-1 grid grid-cols-2 gap-4">
             {question.options.map((option, i) => (
